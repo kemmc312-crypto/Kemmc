@@ -1,79 +1,22 @@
-name: Build debug APK
-
+name: Build APK
 on:
   push:
     branches: [ main, master ]
-  pull_request:
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      # Tự tìm project Gradle: ở thư mục gốc, trong thư mục con, hoặc trong file .zip upload lên repo.
-      - name: Tìm thư mục project
-        run: |
-          find_settings() {
-            find . -maxdepth 3 \( -name settings.gradle.kts -o -name settings.gradle \) \
-              -not -path './.git/*' | head -n 1
-          }
-          S="$(find_settings)"
-          if [ -z "$S" ]; then
-            for z in ./*.zip; do
-              if [ -f "$z" ]; then
-                echo "Giải nén $z"
-                unzip -q -o "$z" -x '__MACOSX/*'
-              fi
-            done
-            S="$(find_settings)"
-          fi
-          if [ -z "$S" ]; then
-            echo "::error::Không thấy settings.gradle(.kts) trong repo. Hãy đẩy project (hoặc file .zip chứa project) lên thư mục gốc."
-            ls -la
-            exit 1
-          fi
-          DIR="$(dirname "$S")"
-          echo "Project nằm ở: $DIR"
-          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
-
-      - name: Cài JDK 17
-        uses: actions/setup-java@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-
-      - name: Chuẩn bị Android SDK
-        run: |
-          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" "platforms;android-35" "build-tools;35.0.0" > /dev/null
-
-      - name: Cài Gradle (có cache)
-        uses: gradle/actions/setup-gradle@v6
-
-      - name: Build debug APK
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          chmod +x ./gradlew
-          ./gradlew assembleDebug --stacktrace
-
-      - name: Tải APK lên
-        uses: actions/upload-artifact@v4
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          name: GameResolutionHelper-debug-apk
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-
-      - name: Tải báo cáo lỗi (khi build hỏng)
-        if: failure()
-        uses: actions/upload-artifact@v4
+          gradle-version: 8.5
+      - run: gradle assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
         with:
-          name: build-reports
-          path: ${{ env.PROJECT_DIR }}/app/build/reports
-          if-no-files-found: ignore
-          
+          name: AutoClickLite-apk
+          path: app/build/outputs/apk/debug/*.apk
