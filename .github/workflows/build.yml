@@ -8,8 +8,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Xem cấu trúc repo
-        run: find . -not -path './.git/*' -type f | head -50
+      - name: Giải nén
+        run: unzip -o AutoClickLite.zip -d src_unzip
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -19,11 +19,9 @@ jobs:
           gradle-version: 8.5
       - name: Build
         run: |
-          F=$(find . -name settings.gradle -not -path './.git/*' | head -n1)
-          if [ -z "$F" ]; then echo "KHONG THAY settings.gradle trong repo"; exit 1; fi
-          cd "$(dirname "$F")"
+          cd src_unzip
           gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: AutoClickLite-apk
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: src_unzip/app/build/outputs/apk/debug/*.apk
