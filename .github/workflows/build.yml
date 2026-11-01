@@ -8,6 +8,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Xem cấu trúc repo
+        run: find . -not -path './.git/*' -type f | head -50
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -15,8 +17,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.5
-      - run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Build
+        run: |
+          F=$(find . -name settings.gradle -not -path './.git/*' | head -n1)
+          if [ -z "$F" ]; then echo "KHONG THAY settings.gradle trong repo"; exit 1; fi
+          cd "$(dirname "$F")"
+          gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: AutoClickLite-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: '**/build/outputs/apk/debug/*.apk'
