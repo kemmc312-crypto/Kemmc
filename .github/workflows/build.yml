@@ -1,41 +1,166 @@
-name: Build APK
+name: Build APK from ZIP
+
+# Đặt file này tại: .github/workflows/build.yml
+# Cách dùng: đẩy (push) file .zip chứa project Android lên repo,
+# hoặc vào tab Actions > Build APK from ZIP > Run workflow.
 
 on:
   push:
+    paths:
+      - '**.zip'
   workflow_dispatch:
+    inputs:
+      zip_path:
+        description: 'Đường dẫn file zip (để trống = build tất cả file zip trong repo)'
+        required: false
+        default: ''
+      build_type:
+        description: 'Loại build'
+        type: choice
+        options:
+          - debug
+          - release
+        default: debug
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  find-zips:
+    name: Tìm file ZIP
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+      has_zips: ${{ steps.list.outputs.has_zips }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Liệt kê file zip
+        id: list
+        shell: bash
+        env:
+          ZIP_INPUT: ${{ github.event.inputs.zip_path }}
+        run: |
+          if [ -n "$ZIP_INPUT" ]; then
+            files="$ZIP_INPUT"
+          else
+            files=$(find . -type f -iname '*.zip' -not -path './.git/*' | sed 's|^\./||' | sort)
+          fi
+
+          files=$(printf '%s\n' "$files" | grep -v '^$' || true)
+
+          if [ -z "$files" ]; then
+            echo "has_zips=false" >> "$GITHUB_OUTPUT"
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo "Không tìm thấy file zip nào."
+            exit 0
+          fi
+
+          matrix=$(printf '%s\n' "$files" | jq -R . | jq -sc '{include: map({zip: ., name: (sub("(?i)\\.zip$";"") | gsub("[^A-Za-z0-9._-]";"_"))})}')
+          echo "has_zips=true" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Sẽ build: $matrix"
+
+  build:
+    name: Build ${{ matrix.zip }}
+    needs: find-zips
+    if: needs.find-zips.outputs.has_zips == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.find-zips.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Giải nén ZIP và tìm thư mục project
+        shell: bash
+        env:
+          ZIP_FILE: ${{ matrix.zip }}
+        run: |
+          set -e
+          SRC="$RUNNER_TEMP/src"
+          rm -rf "$SRC" && mkdir -p "$SRC"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::Không tìm thấy file $ZIP_FILE"
+            exit 1
+          fi
+
+          unzip -q -o "$ZIP_FILE" -d "$SRC"
+          rm -rf "$SRC/__MACOSX"
+
+          # Tìm gốc project: ưu tiên settings.gradle(.kts), rồi gradlew, rồi build.gradle(.kts)
+          pick() {
+            find "$SRC" -type f \( "$@" \) | awk '{print length, $0}' | sort -n | head -1 | cut -d' ' -f2-
+          }
+          marker=$(pick -name 'settings.gradle' -o -name 'settings.gradle.kts')
+          [ -z "$marker" ] && marker=$(pick -name 'gradlew')
+          [ -z "$marker" ] && marker=$(pick -name 'build.gradle' -o -name 'build.gradle.kts')
+
+          if [ -z "$marker" ]; then
+            echo "::error::ZIP không phải project Android Gradle (không có settings.gradle / build.gradle / gradlew)."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$marker")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project nằm ở: $PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
+
+      - name: Cài JDK 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Cài Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cài Gradle (dự phòng khi project không có gradlew)
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.9
+          gradle-version: '8.9'
 
-      - name: Giai nen zip
+      - name: Build APK
+        shell: bash
+        env:
+          BUILD_TYPE: ${{ github.event.inputs.build_type || 'debug' }}
         run: |
-          mkdir -p src
-          for z in *.zip; do unzip -o "$z" -d src; done
+          set -e
+          cd "$PROJECT_DIR"
 
-      - name: Tim thu muc project
-        id: find
+          if [ -f gradlew ]; then
+            sed -i 's/\r$//' gradlew
+            chmod +x gradlew
+            GRADLE=./gradlew
+          else
+            GRADLE=gradle
+          fi
+
+          if [ "$BUILD_TYPE" = "release" ]; then
+            TASK=assembleRelease
+          else
+            TASK=assembleDebug
+          fi
+
+          echo "Chạy: $GRADLE $TASK"
+          $GRADLE "$TASK" --no-daemon --stacktrace
+
+      - name: Gom file APK
+        shell: bash
         run: |
-          f=$(find src -name 'settings.gradle*' -not -path '*/node_modules/*' | head -n 1)
-          if [ -z "$f" ]; then echo "Khong thay settings.gradle trong zip"; exit 1; fi
-          echo "dir=$(dirname "$f")" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/apk"
+          find "$PROJECT_DIR" -type f -name '*.apk' -path '*build/outputs*' -exec cp -v {} "$RUNNER_TEMP/apk/" \;
+          if [ -z "$(ls -A "$RUNNER_TEMP/apk")" ]; then
+            echo "::error::Build xong nhưng không thấy file APK (có thể project không phải app module)."
+            exit 1
+          fi
+          ls -la "$RUNNER_TEMP/apk"
 
-      - name: Build debug APK
-        working-directory: ${{ steps.find.outputs.dir }}
-        run: gradle assembleDebug --no-daemon --stacktrace
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          name: GameBox-debug-apk
-          path: ${{ steps.find.outputs.dir }}/**/build/outputs/apk/debug/*.apk
+          name: apk-${{ matrix.name }}
+          path: ${{ runner.temp }}/apk/*.apk
+          if-no-files-found: error
+          
